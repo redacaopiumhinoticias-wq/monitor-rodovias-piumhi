@@ -26,8 +26,8 @@ TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 BBOX = "-46.40,-20.90,-45.40,-20.00"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-# Endpoint oficial de incidentes da TomTom v5
-TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails?key={TOMTOM_KEY}&bbox={BBOX}&fields={{incidents{{id,geometry{{type,coordinates}},properties{{iconCategory,magnitudeOfDelay,events{{description,code}},timeValidity}}}}}}"
+# Endpoint oficial TomTom v5
+TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -47,9 +47,17 @@ def enviar_telegram(mensagem):
 
 def obter_dados_tomtom():
     if not TOMTOM_KEY:
-        return False, "TOMTOM_KEY não configurada no Render"
+        return False, "TOMTOM_KEY não configurada nas variáveis do Render"
+    
+    # Parâmetros enviados de forma limpa para evitar erros de codificação na URL
+    params = {
+        "key": TOMTOM_KEY.strip(),
+        "bbox": BBOX,
+        "language": "pt-BR"
+    }
+    
     try:
-        r = requests.get(TOMTOM_URL, timeout=10)
+        r = requests.get(TOMTOM_URL, params=params, timeout=10)
         if r.status_code == 200:
             return True, r.json()
         return False, f"HTTP {r.status_code}"
