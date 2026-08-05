@@ -21,7 +21,7 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas ajustadas para Piumhi e rodovias da região (MG-050)
+# Coordenadas regionais de Piumhi / MG-050
 BOTTOM = -20.90
 LEFT = -46.40
 TOP = -20.00
@@ -30,13 +30,15 @@ RIGHT = -45.40
 PIUMHI_LAT = -20.46
 PIUMHI_LON = -45.95
 
-# Endpoint do Waze LiveMap
-WAZE_URL = f"https://www.waze.com/live-map/api/georss?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row&types=alerts,jams"
+# Endpoint alternativo formato feed livre
+WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&types=alerts,jams"
 
+# Cabeçalhos simulando um aparelho Android real
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://www.waze.com/live-map/"
+    "User-Agent": "Waze/4.90.0.1 (Android; Android 13; Mobile)",
+    "Accept": "*/*",
+    "Accept-Language": "pt-BR",
+    "Connection": "keep-alive"
 }
 
 alertas_enviados = set()
@@ -56,12 +58,9 @@ def enviar_telegram(mensagem):
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
 def obter_dados_waze():
-    """Tenta obter dados do Waze com requisição direta e segura."""
     try:
-        s = requests.Session()
-        # Faz uma requisição inicial ao site para obter cookies válidos
-        s.get("https://www.waze.com/live-map/", headers=HEADERS, timeout=5)
-        response = s.get(WAZE_URL, headers=HEADERS, timeout=10)
+        # Requisição direta com User-Agent mobile
+        response = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
         if response.status_code == 200:
             return True, response.json()
         return False, f"HTTP {response.status_code}"
@@ -74,7 +73,7 @@ def checar_status_waze():
         total_alerts = len(resultado.get("alerts", []))
         total_jams = len(resultado.get("jams", []))
         return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções)"
-    return False, f"Aguardando sincronização ({resultado})"
+    return False, f"Bloqueio de IP ({resultado})"
 
 def obter_clima():
     try:
@@ -105,7 +104,7 @@ def processar_comandos():
                 
                 if text.startswith("/ping") or text.startswith("/ajuda"):
                     waze_ok, waze_info = checar_status_waze()
-                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🟡 *Waze:* {waze_info}"
+                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze:* {waze_info}"
                     tempo_ativo_min = round((time.time() - inicio_bot) / 60)
                     
                     resposta = (
@@ -131,15 +130,13 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando alertas e congestionamentos no Waze...")
+    print("Verificando alertas no Waze...")
     ok, data = obter_dados_waze()
     if ok:
         alerts = data.get("alerts", [])
         jams = data.get("jams", [])
-        
         alertas_novos = 0
         
-        # 1. Alertas
         for alert in alerts:
             alert_id = alert.get("uuid")
             alert_type = alert.get("type", "ALERTA")
@@ -159,7 +156,6 @@ def monitorar(forcar_envio_status=False):
                 alertas_enviados.add(alert_id)
                 alertas_novos += 1
 
-        # 2. Congestionamentos
         for jam in jams:
             jam_id = jam.get("uuid")
             street = jam.get("street", "Via não informada")
@@ -184,7 +180,7 @@ def monitorar(forcar_envio_status=False):
             enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
     else:
         if forcar_envio_status:
-            enviar_telegram("⚠️ *Aviso:* Não foi possível carregar novas atualizações do Waze no momento. O bot tentará novamente na próxima varredura.")
+            enviar_telegram("⚠️ *Servidor Waze Temporariamente Indisponível:* O Waze restringiu o acesso automático. O bot continuará tentando periodicamente.")
 
 if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
