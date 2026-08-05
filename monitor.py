@@ -25,6 +25,7 @@ TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
 BBOX = "-46.30,-20.80,-45.50,-20.10"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
+TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -46,21 +47,17 @@ def obter_dados_tomtom():
     if not TOMTOM_KEY:
         return False, "TOMTOM_KEY não configurada no Render"
     
-    key_limpa = TOMTOM_KEY.strip()
-    
-    # URL formatada diretamente com URL Encoding explícito nos caracteres de chaves
-    url = (
-        f"https://api.tomtom.com/traffic/services/5/incidentDetails"
-        f"?key={key_limpa}"
-        f"&bbox={BBOX}"
-        f"&fields=%7Bincidents%7Bid,geometry%7Btype,coordinates%7D,properties%7BiconCategory,magnitudeOfDelay,events%7Bdescription,code%7D%7D%7D%7D"
-    )
+    params = {
+        "key": TOMTOM_KEY.strip(),
+        "bbox": BBOX,
+        "fields": "{incidents{id,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code}}}}"
+    }
     
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(TOMTOM_URL, params=params, timeout=10)
         if r.status_code == 200:
             return True, r.json()
-        return False, f"HTTP {r.status_code} - {r.text[:100]}"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, str(e)
 
@@ -171,10 +168,12 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
+    # Inicia a escuta de comandos do Telegram em Thread separada
     t_comandos = Thread(target=loop_comandos_telegram)
     t_comandos.daemon = True
     t_comandos.start()
     
-    enviar_telegram("🤖 *Bot Atualizado com Sucesso!* Digite `/ping` para checar o status.")
+    enviar_telegram("🤖 *Bot Inicializado!* Digite `/ping` para checar o status.")
     
+    # Roda o monitoramento na thread principal
     loop_monitoramento()
