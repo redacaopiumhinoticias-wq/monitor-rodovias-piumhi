@@ -1,191 +1,199 @@
 import os
-import threading
 import time
 import requests
+from flask import Flask
+from threading import Thread
 from datetime import datetime
-from flask import Flask, request
-from apscheduler.schedulers.background import BackgroundScheduler
 
-# Inicializa o Flask para manter o serviço ativo no Render.com
-app = Flask(__name__)
+app = Flask('')
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-# Variáveis globais para monitoramento de estado
-TEMPO_INICIO = datetime.now()
-status_waze_atual = "ativo"
-
-# Coordenadas de Piumhi - MG (100km de raio)
-LAT_CENTER = -20.4544
-LON_CENTER = -45.7142
-DELTA = 0.95
-
-TOP = LAT_CENTER + DELTA
-BOTTOM = LAT_CENTER - DELTA
-RIGHT = LON_CENTER + DELTA
-LEFT = LON_CENTER - DELTA
-
-alertas_enviados = set()
-
-def enviar_telegram(mensagem, chat_id=None):
-    target_chat = chat_id or TELEGRAM_CHAT_ID
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": target_chat,
-        "text": mensagem,
-        "parse_mode": "Markdown"
-    }
-    try:
-        response = requests.post(url, json=payload)
-        return response.json()
-    except Exception as e:
-        print(f"Erro ao enviar mensagem para o Telegram: {e}")
-
-def formatar_tempo_no_ar():
-    agora = datetime.now()
-    diferenca = agora - TEMPO_INICIO
-    segundos_totais = int(diferenca.total_seconds())
-    
-    dias = segundos_totais // 86400
-    horas = (segundos_totais % 86400) // 3600
-    minutos = (segundos_totais % 3600) // 60
-    
-    partes = []
-    if dias > 0:
-        partes.append(f"{dias}d")
-    if horas > 0 or dias > 0:
-        partes.append(f"{horas}h")
-    partes.append(f"{minutos}m")
-    
-    return " ".join(partes) if partes else "menos de 1m"
-
-def gerar_texto_ping():
-    servidor_render = "✅ Ativo (Online)"
-    tempo_ar = formatar_tempo_no_ar()
-    
-    if status_waze_atual == "ativo":
-        waze_status = "🟢 Ativo"
-    else:
-        waze_status = "🔴 Erro"
-        
-    texto = (
-        "🤖 **STATUS DO BOT**\n\n"
-        f"✅ **Servidor Render:** {servidor_render}\n"
-        f"⏱️ **Tempo no ar:** {tempo_ar}\n"
-        f"🔴 **Waze:** {waze_status}\n\n"
-        "📌 **Comandos disponíveis:**\n"
-        "• `/ping` - Checa se o bot está ativo\n"
-        "• `/status` - Varre o tráfego da região agora"
-    )
-    return texto
-
-def buscar_alertas_waze():
-    global status_waze_atual
-    print(f"[{datetime.now()}] Consultando Waze para a região de Piumhi...")
-    url = f"https://www.waze.com/row-rtserver/web/Traf/WazeTrafficServer/alerts?bottom={BOTTOM}&left={LEFT}&top={TOP}&right={RIGHT}&types=alerts"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            status_waze_atual = "erro"
-            return
-        
-        status_waze_atual = "ativo"
-        data = response.json()
-        alerts = data.get("alerts", [])
-        agora = datetime.utcnow()
-        
-        for alert in alerts:
-            alert_id = alert.get("uuid")
-            if not alert_id or alert_id in alertas_enviados:
-                continue
-                
-            pub_millis = alert.get("pubMillis", 0)
-            pub_time = datetime.utcfromtimestamp(pub_millis / 1000.0)
-            diferenca_minutos = (agora - pub_time).total_seconds() / 60.0
-            
-            # Respeita o delay mínimo de 3 minutos
-            if diferenca_minutos < 3:
-                continue
-                
-            tipo = alert.get("type", "GERAL")
-            subtipo = alert.get("subtype", "N/A")
-            rua = alert.get("street", "Via não especificada")
-            cidade = alert.get("city", "Região de Piumhi")
-            
-            tipos_map = {
-                "ACCIDENT": "🚗 **Acidente**",
-                "HAZARD": "⚠️ **Perigo / Obstáculo / Buraco**",
-                "JAM": "🛑 **Lentidão / Trânsito**",
-                "ROAD_CLOSED": "🚧 **Via Interditada / Obras**",
-                "POLICE": "👮 **Polícia**"
-            }
-            
-            tipo_formatado = tipos_map.get(tipo, f"📢 **Alerta: {tipo}**")
-            
-            mensagem = (
-                f"{tipo_formatado} (@alertarodpiumhi_bot)\n\n"
-                f"🛣️ **Local:** {rua}, {cidade}\n"
-                f"📋 **Detalhes:** {subtipo}\n"
-                f"⏱️ **Postado há:** cerca de {int(diferenca_minutos)} minutos\n"
-                f"📍 [Ver no Google Maps](https://maps.google.com/?q={alert.get('location', {}).get('y')},{alert.get('location', {}).get('x')})"
-            )
-            
-            enviar_telegram(mensagem)
-            alertas_enviados.add(alert_id)
-            
-            if len(alertas_enviados) > 1000:
-                alertas_enviados.clear()
-                
-    except Exception as e:
-        print(f"Erro ao processar Waze: {e}")
-        status_waze_atual = "erro"
-
-# Rota simples para o Render saber que o app está ativo
 @app.route('/')
 def home():
-    return "Bot @alertarodpiumhi_bot está rodando com sucesso!"
+    return "Bot de Monitoramento Rodoviário Online!"
 
-# Webhook para receber mensagens do Telegram e responder aos comandos /ping e /status
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
-def receber_telegram():
-    data = request.get_json()
-    if data and "message" in data:
-        message = data["message"]
-        chat_id = message["chat"]["id"]
-        texto = message.get("text", "").strip()
-        
-        if texto == "/ping":
-            resposta = gerar_texto_ping()
-            enviar_telegram(resposta, chat_id)
-            
-        elif texto == "/status":
-            enviar_telegram("🔄 Executando varredura manual imediata no Waze...", chat_id)
-            buscar_alertas_waze()
-            enviar_telegram("✅ Varredura manual concluída com sucesso!", chat_id)
-            
-    return "OK", 200
+def run():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
-def configurar_webhook():
-    if TELEGRAM_TOKEN:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL")
-        if render_url:
-            webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
-            url_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
-            requests.get(url_api)
-            print(f"Webhook configurado para: {webhook_url}")
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# Coordenadas regionais (~100 km ao redor de Piumhi)
+BOTTOM = -21.30
+LEFT = -46.80
+TOP = -19.60
+RIGHT = -45.10
+
+PIUMHI_LAT = -20.46
+PIUMHI_LON = -45.95
+
+WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row&types=alerts,jams"
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+alertas_enviados = set()
+last_update_id = 0
+inicio_bot = time.time()
+
+def enviar_telegram(mensagem):
+    if not TOKEN or not CHAT_ID:
+        print("ERRO: TELEGRAM_TOKEN ou CHAT_ID nao configurados!")
+        return
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "Markdown"}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        print(f"Envio Telegram Status: {r.status_code}")
+    except Exception as e:
+        print(f"Erro ao enviar mensagem no Telegram: {e}")
+
+def checar_status_waze():
+    """Testa se a API do Waze está respondendo corretamente."""
+    try:
+        r = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            total_alerts = len(data.get("alerts", []))
+            total_jams = len(data.get("jams", []))
+            return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções ativas)"
+        else:
+            return False, f"Erro HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"Falha na conexão: {e}"
+
+def obter_clima():
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={PIUMHI_LAT}&longitude={PIUMHI_LON}&current_weather=true"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            weather = r.json().get("current_weather", {})
+            temp = weather.get("temperature", "N/A")
+            wind = weather.get("windspeed", "N/A")
+            return f"☀️ *Clima em Piumhi:* {temp}°C | Vento: {wind} km/h"
+    except Exception:
+        pass
+    return "Não foi possível obter dados do clima no momento."
+
+def processar_comandos():
+    global last_update_id
+    if not TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=2"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            updates = r.json().get("result", [])
+            for update in updates:
+                last_update_id = update.get("update_id", last_update_id)
+                message = update.get("message", {})
+                text = message.get("text", "").strip()
+                
+                if text.startswith("/ping") or text.startswith("/ajuda"):
+                    waze_ok, waze_info = checar_status_waze()
+                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze Inacessível:* {waze_info}"
+                    
+                    tempo_ativo_min = round((time.time() - inicio_bot) / 60)
+                    
+                    resposta = (
+                        f"🤖 *STATUS DO BOT*\n\n"
+                        f"✅ *Servidor Render:* Ativo / Online\n"
+                        f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
+                        f"{status_waze_str}\n\n"
+                        f"📌 *Comandos disponíveis:*\n"
+                        f"• `/ping` - Checa se o bot está ativo\n"
+                        f"• `/status` - Varre o tráfego da região agora\n"
+                        f"• `/clima` - Consulta a temperatura atual"
+                    )
+                    enviar_telegram(resposta)
+
+                elif text.startswith("/status"):
+                    enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
+                    monitorar(forcar_envio_status=True)
+
+                elif text.startswith("/clima"):
+                    enviar_telegram(obter_clima())
+
+    except Exception as e:
+        print(f"Erro ao checar comandos: {e}")
+
+def monitorar(forcar_envio_status=False):
+    print("Verificando todos os alertas e congestionamentos no Waze...")
+    try:
+        response = requests.get(WAZE_URL, headers=HEADERS, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            alerts = data.get("alerts", [])
+            jams = data.get("jams", [])
+            
+            alertas_novos = 0
+            
+            # 1. Alertas
+            for alert in alerts:
+                alert_id = alert.get("uuid")
+                alert_type = alert.get("type", "ALERTA")
+                subtype = alert.get("subtype", alert_type)
+                street = alert.get("street", "Via não informada")
+                report_description = alert.get("reportDescription", "")
+                city = alert.get("city", "")
+
+                if alert_id and alert_id not in alertas_enviados:
+                    mensagem = (
+                        f"🚨 *ALERTA DE TRÂNSITO*\n\n"
+                        f"📍 *Local:* {street} ({city if city else 'Região'})\n"
+                        f"⚠️ *Tipo:* {subtype}\n"
+                        f"📝 *Detalhes:* {report_description or 'Sem descrição extra'}"
+                    )
+                    enviar_telegram(mensagem)
+                    alertas_enviados.add(alert_id)
+                    alertas_novos += 1
+
+            # 2. Congestionamentos
+            for jam in jams:
+                jam_id = jam.get("uuid")
+                street = jam.get("street", "Via não informada")
+                city = jam.get("city", "")
+                speed_kmh = jam.get("speed", 0) * 3.6
+                delay_min = round(jam.get("delay", 0) / 60)
+                length_m = jam.get("length", 0)
+
+                if jam_id and jam_id not in alertas_enviados:
+                    mensagem = (
+                        f"🐢 *LENTIDÃO / CONGESTIONAMENTO*\n\n"
+                        f"📍 *Local:* {street} ({city if city else 'Região'})\n"
+                        f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
+                        f"📏 *Extensão:* {length_m} metros\n"
+                        f"🚗 *Velocidade média:* {speed_kmh:.1f} km/h"
+                    )
+                    enviar_telegram(mensagem)
+                    alertas_enviados.add(jam_id)
+                    alertas_novos += 1
+
+            if forcar_envio_status and alertas_novos == 0:
+                enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
+
+        else:
+            print(f"Erro na API do Waze: {response.status_code}")
+    except Exception as e:
+        print(f"Erro na requisição: {e}")
 
 if __name__ == "__main__":
-    # Inicia o agendador de tarefas em background para checar o Waze a cada 2 minutos
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(buscar_alertas_waze, 'interval', minutes=2)
-    scheduler.start()
+    print("Iniciando servidor Flask de sustentação...")
+    keep_alive()
     
-    # Configura o webhook do Telegram após 5 segundos para garantir que o app subiu
-    threading.Timer(5.0, configurar_webhook).start()
+    enviar_telegram("🤖 *Bot Atualizado!* Digite `/ping` a qualquer momento para verificar o status.")
     
-    # Roda o servidor Flask na porta exigida pelo Render
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    monitorar()
+    ultimo_monitoramento = time.time()
+    
+    while True:
+        processar_comandos()
+        
+        agora = time.time()
+        if agora - ultimo_monitoramento >= 300:
+            monitorar()
+            ultimo_monitoramento = agora
+            
+        time.sleep(3)
