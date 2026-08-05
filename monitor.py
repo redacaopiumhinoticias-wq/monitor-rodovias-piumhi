@@ -1,173 +1,113 @@
 import os
 import time
 import requests
-from flask import Flask
-from threading import Thread
+from datetime import datetime, timedelta
+from apscheduler.schedulers.blocking import BlockingScheduler
 
-app = Flask('')
+# Configurações do Telegram
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-@app.route('/')
-def home():
-    return "Bot de Monitoramento Rodoviário Online!"
+# Coordenadas de Piumhi - MG e margens para cobrir 100km de raio
+LAT_CENTER = -20.4544
+LON_CENTER = -45.7142
+DELTA = 0.95  # ~100 km de raio aproximado em graus
 
-def run():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+TOP = LAT_CENTER + DELTA
+BOTTOM = LAT_CENTER - DELTA
+RIGHT = LON_CENTER + DELTA
+LEFT = LON_CENTER - DELTA
 
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-TOMTOM_KEY = os.getenv("TOMTOM_KEY")
-
-# Coordenadas ajustadas para ficar estritamente abaixo de 10.000 km² (~7.500 km²) na região de Piumhi / MG-050
-BBOX = "-46.30,-20.80,-45.50,-20.10"
-PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
-
-# Endpoint oficial v5 limpo, sem .json e com o fields explicitamente definido para retornar IDs e eventos
-TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails"
-
+# Armazenar IDs de alertas já enviados para evitar duplicidade
 alertas_enviados = set()
-last_update_id = 0
-inicio_bot = time.time()
 
 def enviar_telegram(mensagem):
-    if not TOKEN or not CHAT_ID:
-        print("ERRO: TELEGRAM_TOKEN ou CHAT_ID nao configurados!")
-        return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": mensagem, "parse_mode": "Markdown"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": mensagem,
+        "parse_mode": "Markdown"
+    }
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        print(f"Envio Telegram Status: {r.status_code}")
+        response = requests.post(url, json=payload)
+        return response.json()
     except Exception as e:
-        print(f"Erro ao enviar mensagem no Telegram: {e}")
+        print(f"Erro ao enviar mensagem para o Telegram: {e}")
 
-def obter_dados_tomtom():
-    if not TOMTOM_KEY:
-        return False, "TOMTOM_KEY não configurada no Render"
+def buscar_alertas_waze():
+    print(f"[{datetime.now()}] Consultando Waze para a região de Piumhi...")
     
-    params = {
-        "key": TOMTOM_KEY.strip(),
-        "bbox": BBOX,
-        "fields": "{incidents{id,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code}}}}"
+    url = f"https://www.waze.com/row-rtserver/web/Traf/WazeTrafficServer/alerts?bottom={BOTTOM}&left={LEFT}&top={TOP}&right={RIGHT}&types=alerts"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     
     try:
-        r = requests.get(TOMTOM_URL, params=params, timeout=10)
-        if r.status_code == 200:
-            return True, r.json()
-        return False, f"HTTP {r.status_code} - {r.text}"
-    except Exception as e:
-        return False, str(e)
-
-def checar_status_tomtom():
-    ok, resultado = obter_dados_tomtom()
-    if ok:
-        incidents = resultado.get("incidents", [])
-        return True, f"Conectado ({len(incidents)} incidentes ativos)"
-    return False, f"Erro: {resultado}"
-
-def obter_clima():
-    try:
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={PIUMHI_LAT}&longitude={PIUMHI_LON}&current_weather=true"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            weather = r.json().get("current_weather", {})
-            temp = weather.get("temperature", "N/A")
-            wind = weather.get("windspeed", "N/A")
-            return f"☀️ *Clima em Piumhi:* {temp}°C | Vento: {wind} km/h"
-    except Exception:
-        pass
-    return "Não foi possível obter dados do clima no momento."
-
-def processar_comandos():
-    global last_update_id
-    if not TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=2"
-    try:
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            updates = r.json().get("result", [])
-            for update in updates:
-                last_update_id = update.get("update_id", last_update_id)
-                message = update.get("message", {})
-                text = message.get("text", "").strip()
-                
-                if text.startswith("/ping") or text.startswith("/ajuda"):
-                    tomtom_ok, tomtom_info = checar_status_tomtom()
-                    status_str = f"🟢 *Monitor TomTom:* {tomtom_info}" if tomtom_ok else f"🔴 *TomTom:* {tomtom_info}"
-                    tempo_ativo_min = round((time.time() - inicio_bot) / 60)
-                    
-                    resposta = (
-                        f"🤖 *STATUS DO BOT*\n\n"
-                        f"✅ *Servidor Render:* Ativo / Online\n"
-                        f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
-                        f"{status_str}\n\n"
-                        f"📌 *Comandos disponíveis:*\n"
-                        f"• `/ping` - Checa se o bot está ativo\n"
-                        f"• `/status` - Varre o tráfego da região agora\n"
-                        f"• `/clima` - Consulta a temperatura atual"
-                    )
-                    enviar_telegram(resposta)
-
-                elif text.startswith("/status"):
-                    enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
-                    monitorar(forcar_envio_status=True)
-
-                elif text.startswith("/clima"):
-                    enviar_telegram(obter_clima())
-
-    except Exception as e:
-        print(f"Erro ao checar comandos: {e}")
-
-def monitorar(forcar_envio_status=False):
-    print("Verificando incidentes na TomTom...")
-    ok, data = obter_dados_tomtom()
-    if ok:
-        incidents = data.get("incidents", [])
-        novos = 0
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"Erro na API do Waze: {response.status_code}")
+            return
         
-        for inc in incidents:
-            inc_id = inc.get("id")
-            props = inc.get("properties", {})
-            events = props.get("events", [])
-            descricao = events[0].get("description", "Incidente de trânsito") if events else "Aviso na via"
+        data = response.json()
+        alerts = data.get("alerts", [])
+        
+        agora = datetime.utcnow()
+        
+        for alert in alerts:
+            alert_id = alert.get("uuid")
+            if not alert_id or alert_id in alertas_enviados:
+                continue
+                
+            pub_millis = alert.get("pubMillis", 0)
+            pub_time = datetime.utcfromtimestamp(pub_millis / 1000.0)
             
-            if inc_id and inc_id not in alertas_enviados:
-                mensagem = (
-                    f"🚨 *ALERTA DE TRÂNSITO (TomTom)*\n\n"
-                    f"📍 *Região:* Piumhi / MG-050\n"
-                    f"⚠️ *Detalhes:* {descricao}"
-                )
-                enviar_telegram(mensagem)
-                alertas_enviados.add(inc_id)
-                novos += 1
-
-        if forcar_envio_status and novos == 0:
-            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado na TomTom para a região (Total ativo: {len(incidents)}).")
-    else:
-        if forcar_envio_status:
-            enviar_telegram(f"⚠️ *Erro na conexão TomTom:* {data}")
+            diferenca_minutos = (agora - pub_time).total_seconds() / 60.0
+            
+            # Regra dos 3 minutos de delay mínimo
+            if diferenca_minutos < 3:
+                continue
+                
+            tipo = alert.get("type", "GERAL")
+            subtipo = alert.get("subtype", "N/A")
+            rua = alert.get("street", "Via não especificada")
+            cidade = alert.get("city", "Região de Piumhi")
+            
+            tipos_map = {
+                "ACCIDENT": "🚗 **Acidente**",
+                "HAZARD": "⚠️ **Perigo / Obstáculo / Buraco**",
+                "JAM": "🛑 **Lentidão / Trânsito**",
+                "ROAD_CLOSED": "🚧 **Via Interditada / Obras**",
+                "POLICE": "👮 **Polícia**"
+            }
+            
+            tipo_formatado = tipos_map.get(tipo, f"📢 **Alerta: {tipo}**")
+            
+            mensagem = (
+                f"{tipo_formatado} (@alertarodpiumhi_bot)\n\n"
+                f"🛣️ **Local:** {rua}, {cidade}\n"
+                f"📋 **Detalhes:** {subtipo}\n"
+                f"⏱️ **Postado há:** cerca de {int(diferenca_minutos)} minutos\n"
+                f"📍 [Ver no Google Maps](https://maps.google.com/?q={alert.get('location', {}).get('y')},{alert.get('location', {}).get('x')})"
+            )
+            
+            enviar_telegram(mensagem)
+            alertas_enviados.add(alert_id)
+            
+            if len(alertas_enviados) > 1000:
+                alertas_enviados.clear()
+                
+    except Exception as e:
+        print(f"Erro ao processar dados do Waze: {e}")
 
 if __name__ == "__main__":
-    print("Iniciando servidor Flask de sustentação...")
-    keep_alive()
+    print("Iniciando Bot de Monitoramento de Rodovias...")
+    scheduler = BlockingScheduler()
+    scheduler.add_job(buscar_alertas_waze, 'interval', minutes=2)
     
-    enviar_telegram("🤖 *Bot Atualizado e Otimizado!* Digite `/ping` para checar o status.")
+    buscar_alertas_waze()
     
-    monitorar()
-    ultimo_monitoramento = time.time()
-    
-    while True:
-        processar_comandos()
-        
-        agora = time.time()
-        if agora - ultimo_monitoramento >= 300:
-            monitorar()
-            ultimo_monitoramento = agora
-            
-        time.sleep(3)
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        print("Bot interrompido.")
