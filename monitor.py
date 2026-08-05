@@ -21,7 +21,7 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas estáveis para Piumhi e região (evita o erro 404)
+# Coordenadas regionais para Piumhi e região
 BOTTOM = -20.90
 LEFT = -46.40
 TOP = -20.00
@@ -30,9 +30,12 @@ RIGHT = -45.40
 PIUMHI_LAT = -20.46
 PIUMHI_LON = -45.95
 
-# Link limpo da API do Waze
-WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+# Endpoint funcional da API do Waze (sem o parâmetro &env=row que causava 404)
+WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.waze.com/live-map"
+}
 
 alertas_enviados = set()
 last_update_id = 0
@@ -51,7 +54,7 @@ def enviar_telegram(mensagem):
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
 def checar_status_waze():
-    """Testa a conexão com o Waze sem gerar erro 404."""
+    """Testa a conexão com o Waze."""
     try:
         r = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
         if r.status_code == 200:
