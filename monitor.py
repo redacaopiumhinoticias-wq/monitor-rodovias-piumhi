@@ -22,9 +22,12 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
+# Coordenadas ajustadas para ficar estritamente abaixo de 10.000 km² (~7.500 km²) na região de Piumhi / MG-050
 BBOX = "-46.30,-20.80,-45.50,-20.10"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
-TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
+
+# Endpoint oficial v5 limpo, sem .json e com o fields explicitamente definido para retornar IDs e eventos
+TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -83,20 +86,16 @@ def obter_clima():
 def processar_comandos():
     global last_update_id
     if not TOKEN:
-        print("TELEGRAM_TOKEN ausente na checagem de comandos.")
         return
-    
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=2"
     try:
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
-            data = r.json()
-            updates = data.get("result", [])
+            updates = r.json().get("result", [])
             for update in updates:
                 last_update_id = update.get("update_id", last_update_id)
                 message = update.get("message", {})
                 text = message.get("text", "").strip()
-                print(f"Comando recebido do Telegram: '{text}'")
                 
                 if text.startswith("/ping") or text.startswith("/ajuda"):
                     tomtom_ok, tomtom_info = checar_status_tomtom()
@@ -121,10 +120,9 @@ def processar_comandos():
 
                 elif text.startswith("/clima"):
                     enviar_telegram(obter_clima())
-        else:
-            print(f"Erro ao buscar updates do Telegram: HTTP {r.status_code} - {r.text}")
+
     except Exception as e:
-        print(f"Exceção ao processar comandos do Telegram: {e}")
+        print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
     print("Verificando incidentes na TomTom...")
@@ -152,7 +150,6 @@ def monitorar(forcar_envio_status=False):
         if forcar_envio_status and novos == 0:
             enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado na TomTom para a região (Total ativo: {len(incidents)}).")
     else:
-        print(f"Falha na consulta TomTom: {data}")
         if forcar_envio_status:
             enviar_telegram(f"⚠️ *Erro na conexão TomTom:* {data}")
 
@@ -160,8 +157,7 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    print("Enviando aviso inicial no Telegram...")
-    enviar_telegram("🤖 *Bot Reiniciado com Sucesso!* Digite `/ping` para testar.")
+    enviar_telegram("🤖 *Bot Atualizado e Otimizado!* Digite `/ping` para checar o status.")
     
     monitorar()
     ultimo_monitoramento = time.time()
