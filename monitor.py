@@ -1,15 +1,20 @@
 import os
 import threading
+import time
 import requests
 from datetime import datetime
-from flask import flask
+from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Inicializa o Flask (necessário para manter o serviço ativo no Render.com)
+# Inicializa o Flask para manter o serviço ativo no Render.com
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+# Variáveis globais para monitoramento de estado
+TEMPO_INICIO = datetime.now()
+status_waze_atual = "ativo"
 
 # Coordenadas de Piumhi - MG (100km de raio)
 LAT_CENTER = -20.4544
@@ -37,7 +42,46 @@ def enviar_telegram(mensagem, chat_id=None):
     except Exception as e:
         print(f"Erro ao enviar mensagem para o Telegram: {e}")
 
+def formatar_tempo_no_ar():
+    agora = datetime.now()
+    diferenca = agora - TEMPO_INICIO
+    segundos_totais = int(diferenca.total_seconds())
+    
+    dias = segundos_totais // 86400
+    horas = (segundos_totais % 86400) // 3600
+    minutos = (segundos_totais % 3600) // 60
+    
+    partes = []
+    if dias > 0:
+        partes.append(f"{dias}d")
+    if horas > 0 or dias > 0:
+        partes.append(f"{horas}h")
+    partes.append(f"{minutos}m")
+    
+    return " ".join(partes) if partes else "menos de 1m"
+
+def gerar_texto_ping():
+    servidor_render = "✅ Ativo (Online)"
+    tempo_ar = formatar_tempo_no_ar()
+    
+    if status_waze_atual == "ativo":
+        waze_status = "🟢 Ativo"
+    else:
+        waze_status = "🔴 Erro"
+        
+    texto = (
+        "🤖 **STATUS DO BOT**\n\n"
+        f"✅ **Servidor Render:** {servidor_render}\n"
+        f"⏱️ **Tempo no ar:** {tempo_ar}\n"
+        f"🔴 **Waze:** {waze_status}\n\n"
+        "📌 **Comandos disponíveis:**\n"
+        "• `/ping` - Checa se o bot está ativo\n"
+        "• `/status` - Varre o tráfego da região agora"
+    )
+    return texto
+
 def buscar_alertas_waze():
+    global status_waze_atual
     print(f"[{datetime.now()}] Consultando Waze para a região de Piumhi...")
     url = f"https://www.waze.com/row-rtserver/web/Traf/WazeTrafficServer/alerts?bottom={BOTTOM}&left={LEFT}&top={TOP}&right={RIGHT}&types=alerts"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -45,8 +89,10 @@ def buscar_alertas_waze():
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
+            status_waze_atual = "erro"
             return
         
+        status_waze_atual = "ativo"
         data = response.json()
         alerts = data.get("alerts", [])
         agora = datetime.utcnow()
@@ -95,30 +141,35 @@ def buscar_alertas_waze():
                 
     except Exception as e:
         print(f"Erro ao processar Waze: {e}")
+        status_waze_atual = "erro"
 
 # Rota simples para o Render saber que o app está ativo
 @app.route('/')
 def home():
     return "Bot @alertarodpiumhi_bot está rodando com sucesso!"
 
-# Webhook simples para receber mensagens do Telegram e responder ao comando /status
+# Webhook para receber mensagens do Telegram e responder aos comandos /ping e /status
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def receber_telegram():
-    from flask import request
     data = request.get_json()
     if data and "message" in data:
         message = data["message"]
         chat_id = message["chat"]["id"]
-        texto = message.get("text", "")
+        texto = message.get("text", "").strip()
         
-        if texto.strip() == "/status":
-            enviar_telegram("✅ **Tudo OK!** O bot está ativo, monitorando as rodovias ao redor de Piumhi e conectado corretamente.", chat_id)
+        if texto == "/ping":
+            resposta = gerar_texto_ping()
+            enviar_telegram(resposta, chat_id)
+            
+        elif texto == "/status":
+            enviar_telegram("🔄 Executando varredura manual imediata no Waze...", chat_id)
+            buscar_alertas_waze()
+            enviar_telegram("✅ Varredura manual concluída com sucesso!", chat_id)
             
     return "OK", 200
 
 def configurar_webhook():
     if TELEGRAM_TOKEN:
-        # Pega a URL pública gerada pelo Render automaticamente
         render_url = os.environ.get("RENDER_EXTERNAL_URL")
         if render_url:
             webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
