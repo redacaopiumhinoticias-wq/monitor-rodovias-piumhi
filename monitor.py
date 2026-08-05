@@ -48,10 +48,12 @@ def obter_dados_tomtom():
         return False, "TOMTOM_KEY não configurada no Render"
     
     params = {
-        "key": TOMTOM_KEY.strip(),
-        "bbox": BBOX,
-        "fields": "{incidents{id,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code}}}}"
-    }
+    "key": TOMTOM_KEY.strip(),
+    "bbox": BBOX,
+    "language": "pt-BR",
+    "categoryFilter": "0,1,2,3,4,5,6,7,8,9,10,11,14",
+    "timeValidityFilter": "present",
+}
     
     try:
         r = requests.get(TOMTOM_URL, params=params, timeout=10)
