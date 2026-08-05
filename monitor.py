@@ -22,12 +22,13 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
-# Coordenadas da região de Piumhi / MG-050 (minLon, minLat, maxLon, maxLat)
-BBOX = "-46.40,-20.90,-45.40,-20.00"
+# Coordenadas da região de Piumhi / MG-050
+MIN_LON, MIN_LAT = -46.40, -20.90
+MAX_LON, MAX_LAT = -45.40, -20.00
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-# Endpoint oficial TomTom v5
-TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
+# Endpoint oficial TomTom Incident Details v5 (com extensao .json)
+TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails.json"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -47,12 +48,14 @@ def enviar_telegram(mensagem):
 
 def obter_dados_tomtom():
     if not TOMTOM_KEY:
-        return False, "TOMTOM_KEY não configurada nas variáveis do Render"
+        return False, "TOMTOM_KEY não configurada no Render"
     
-    # Parâmetros enviados de forma limpa para evitar erros de codificação na URL
+    # Formato exato retangular esperado pela API TomTom v5
+    bbox_str = f"{MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}"
+    
     params = {
         "key": TOMTOM_KEY.strip(),
-        "bbox": BBOX,
+        "bbox": bbox_str,
         "language": "pt-BR"
     }
     
