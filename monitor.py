@@ -25,7 +25,7 @@ TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
 BBOX = "-46.30,-20.80,-45.50,-20.10"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
-TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails/s3/10/json"
+TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -48,12 +48,10 @@ def obter_dados_tomtom():
         return False, "TOMTOM_KEY não configurada no Render"
     
     params = {
-    "key": TOMTOM_KEY.strip(),
-    "bbox": BBOX,
-    "language": "pt-BR",
-    "categoryFilter": "0,1,2,3,4,5,6,7,8,9,10,11,14",
-    "timeValidityFilter": "present",
-}
+        "key": TOMTOM_KEY.strip(),
+        "bbox": BBOX,
+        "fields": "{incidents{id,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code}}}}"
+    }
     
     try:
         r = requests.get(TOMTOM_URL, params=params, timeout=10)
