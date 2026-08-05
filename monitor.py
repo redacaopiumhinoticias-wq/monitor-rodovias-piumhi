@@ -20,26 +20,15 @@ def keep_alive():
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
-# Coordenadas regionais de Piumhi / MG-050
-BOTTOM = -20.90
-LEFT = -46.40
-TOP = -20.00
-RIGHT = -45.40
+# Coordenadas da região de Piumhi / MG-050
+MIN_LAT, MIN_LON = -20.90, -46.40
+MAX_LAT, MAX_LON = -20.00, -45.40
+PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-PIUMHI_LAT = -20.46
-PIUMHI_LON = -45.95
-
-# Endpoint alternativo formato feed livre
-WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&types=alerts,jams"
-
-# Cabeçalhos simulando um aparelho Android real
-HEADERS = {
-    "User-Agent": "Waze/4.90.0.1 (Android; Android 13; Mobile)",
-    "Accept": "*/*",
-    "Accept-Language": "pt-BR",
-    "Connection": "keep-alive"
-}
+# Endpoint de incidentes de trânsito do TomTom
+TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails?key={TOMTOM_KEY}&bbox={MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}&fields={{incidents{{id,geometry{{type,coordinates}},properties{{iconCategory,magnitudeOfDelay,events{{description,code}},timeValidity}}}}}}"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -57,23 +46,23 @@ def enviar_telegram(mensagem):
     except Exception as e:
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
-def obter_dados_waze():
+def obter_dados_tomtom():
+    if not TOMTOM_KEY:
+        return False, "TOMTOM_KEY não configurada no Render"
     try:
-        # Requisição direta com User-Agent mobile
-        response = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
-        if response.status_code == 200:
-            return True, response.json()
-        return False, f"HTTP {response.status_code}"
+        r = requests.get(TOMTOM_URL, timeout=10)
+        if r.status_code == 200:
+            return True, r.json()
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, str(e)
 
-def checar_status_waze():
-    ok, resultado = obter_dados_waze()
+def checar_status_tomtom():
+    ok, resultado = obter_dados_tomtom()
     if ok:
-        total_alerts = len(resultado.get("alerts", []))
-        total_jams = len(resultado.get("jams", []))
-        return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções)"
-    return False, f"Bloqueio de IP ({resultado})"
+        incidents = resultado.get("incidents", [])
+        return True, f"Conectado ({len(incidents)} incidentes ativos)"
+    return False, f"Erro: {resultado}"
 
 def obter_clima():
     try:
@@ -103,15 +92,15 @@ def processar_comandos():
                 text = message.get("text", "").strip()
                 
                 if text.startswith("/ping") or text.startswith("/ajuda"):
-                    waze_ok, waze_info = checar_status_waze()
-                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze:* {waze_info}"
+                    tomtom_ok, tomtom_info = checar_status_tomtom()
+                    status_str = f"🟢 *Monitor de Trânsito:* {tomtom_info}" if tomtom_ok else f"🔴 *Trânsito:* {tomtom_info}"
                     tempo_ativo_min = round((time.time() - inicio_bot) / 60)
                     
                     resposta = (
                         f"🤖 *STATUS DO BOT*\n\n"
                         f"✅ *Servidor Render:* Ativo / Online\n"
                         f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
-                        f"{status_waze_str}\n\n"
+                        f"{status_str}\n\n"
                         f"📌 *Comandos disponíveis:*\n"
                         f"• `/ping` - Checa se o bot está ativo\n"
                         f"• `/status` - Varre o tráfego da região agora\n"
@@ -130,57 +119,33 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando alertas no Waze...")
-    ok, data = obter_dados_waze()
+    print("Verificando incidentes de trânsito na região...")
+    ok, data = obter_dados_tomtom()
     if ok:
-        alerts = data.get("alerts", [])
-        jams = data.get("jams", [])
-        alertas_novos = 0
+        incidents = data.get("incidents", [])
+        novos = 0
         
-        for alert in alerts:
-            alert_id = alert.get("uuid")
-            alert_type = alert.get("type", "ALERTA")
-            subtype = alert.get("subtype", alert_type)
-            street = alert.get("street", "Via não informada")
-            report_description = alert.get("reportDescription", "")
-            city = alert.get("city", "")
-
-            if alert_id and alert_id not in alertas_enviados:
+        for inc in incidents:
+            inc_id = inc.get("id")
+            props = inc.get("properties", {})
+            events = props.get("events", [])
+            descricao = events[0].get("description", "Incidente na via") if events else "Aviso de trânsito"
+            
+            if inc_id and inc_id not in alertas_enviados:
                 mensagem = (
-                    f"🚨 *ALERTA DE TRÂNSITO*\n\n"
-                    f"📍 *Local:* {street} ({city if city else 'Região'})\n"
-                    f"⚠️ *Tipo:* {subtype}\n"
-                    f"📝 *Detalhes:* {report_description or 'Sem descrição extra'}"
+                    f"🚨 *ALERTA DE RODOVIA*\n\n"
+                    f"📍 *Região:* Piumhi / MG-050\n"
+                    f"⚠️ *Detalhes:* {descricao}"
                 )
                 enviar_telegram(mensagem)
-                alertas_enviados.add(alert_id)
-                alertas_novos += 1
+                alertas_enviados.add(inc_id)
+                novos += 1
 
-        for jam in jams:
-            jam_id = jam.get("uuid")
-            street = jam.get("street", "Via não informada")
-            city = jam.get("city", "")
-            speed_kmh = jam.get("speed", 0) * 3.6
-            delay_min = round(jam.get("delay", 0) / 60)
-            length_m = jam.get("length", 0)
-
-            if jam_id and jam_id not in alertas_enviados:
-                mensagem = (
-                    f"🐢 *LENTIDÃO / CONGESTIONAMENTO*\n\n"
-                    f"📍 *Local:* {street} ({city if city else 'Região'})\n"
-                    f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
-                    f"📏 *Extensão:* {length_m} metros\n"
-                    f"🚗 *Velocidade média:* {speed_kmh:.1f} km/h"
-                )
-                enviar_telegram(mensagem)
-                alertas_enviados.add(jam_id)
-                alertas_novos += 1
-
-        if forcar_envio_status and alertas_novos == 0:
-            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
+        if forcar_envio_status and novos == 0:
+            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado na região (Total ativo: {len(incidents)}).")
     else:
         if forcar_envio_status:
-            enviar_telegram("⚠️ *Servidor Waze Temporariamente Indisponível:* O Waze restringiu o acesso automático. O bot continuará tentando periodicamente.")
+            enviar_telegram(f"⚠️ *Erro:* {data}")
 
 if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
