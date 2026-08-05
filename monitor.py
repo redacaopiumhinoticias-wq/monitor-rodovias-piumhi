@@ -20,15 +20,25 @@ def keep_alive():
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
 # Coordenadas da região de Piumhi / MG-050
 MIN_LAT, MIN_LON = -20.90, -46.40
 MAX_LAT, MAX_LON = -20.00, -45.40
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-# Endpoint simplificado do TomTom
-TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails?key={TOMTOM_KEY}&bbox={MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}"
+# Endpoint público do OpenStreetMap (Overpass API)
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+# Consulta Overpass para buscar construções, barreiras e alertas nas vias da região
+OVERPASS_QUERY = f"""
+[out:json][timeout:10];
+(
+  node({MIN_LAT},{MIN_LON},{MAX_LAT},{MAX_LON})["highway"="construction"];
+  way({MIN_LAT},{MIN_LON},{MAX_LAT},{MAX_LON})["highway"="construction"];
+  node({MIN_LAT},{MIN_LON},{MAX_LAT},{MAX_LON})["barrier"];
+);
+out body;
+"""
 
 alertas_enviados = set()
 last_update_id = 0
@@ -46,23 +56,20 @@ def enviar_telegram(mensagem):
     except Exception as e:
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
-def obter_dados_tomtom():
-    if not TOMTOM_KEY:
-        return False, "TOMTOM_KEY não configurada no Render"
+def obter_dados_osm():
     try:
-        r = requests.get(TOMTOM_URL, timeout=10)
+        r = requests.post(OVERPASS_URL, data={"data": OVERPASS_QUERY}, timeout=10)
         if r.status_code == 200:
-            return True, r.json()
+            return True, r.json().get("elements", [])
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, str(e)
 
-def checar_status_tomtom():
-    ok, resultado = obter_dados_tomtom()
+def checar_status_osm():
+    ok, resultado = obter_dados_osm()
     if ok:
-        incidents = resultado.get("incidents", [])
-        return True, f"Conectado ({len(incidents)} incidentes ativos)"
-    return False, f"Erro: {resultado}"
+        return True, f"Conectado ({len(resultado)} alertas/obras detectados)"
+    return False, f"Erro na consulta ({resultado})"
 
 def obter_clima():
     try:
@@ -92,8 +99,8 @@ def processar_comandos():
                 text = message.get("text", "").strip()
                 
                 if text.startswith("/ping") or text.startswith("/ajuda"):
-                    tomtom_ok, tomtom_info = checar_status_tomtom()
-                    status_str = f"🟢 *Monitor de Trânsito:* {tomtom_info}" if tomtom_ok else f"🔴 *Trânsito:* {tomtom_info}"
+                    osm_ok, osm_info = checar_status_osm()
+                    status_str = f"🟢 *Trânsito/Vias:* {osm_info}" if osm_ok else f"🔴 *Trânsito/Vias:* {osm_info}"
                     tempo_ativo_min = round((time.time() - inicio_bot) / 60)
                     
                     resposta = (
@@ -103,13 +110,13 @@ def processar_comandos():
                         f"{status_str}\n\n"
                         f"📌 *Comandos disponíveis:*\n"
                         f"• `/ping` - Checa se o bot está ativo\n"
-                        f"• `/status` - Varre o tráfego da região agora\n"
+                        f"• `/status` - Varre a região de Piumhi agora\n"
                         f"• `/clima` - Consulta a temperatura atual"
                     )
                     enviar_telegram(resposta)
 
                 elif text.startswith("/status"):
-                    enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
+                    enviar_telegram("🔎 *Verificando situação das rodovias na região de Piumhi...*")
                     monitorar(forcar_envio_status=True)
 
                 elif text.startswith("/clima"):
@@ -119,33 +126,31 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando incidentes de trânsito na região...")
-    ok, data = obter_dados_tomtom()
+    print("Verificando vias na região...")
+    ok, elementos = obter_dados_osm()
     if ok:
-        incidents = data.get("incidents", [])
         novos = 0
-        
-        for inc in incidents:
-            inc_id = inc.get("id")
-            props = inc.get("properties", {})
-            events = props.get("events", [])
-            descricao = events[0].get("description", "Incidente na via") if events else "Aviso de trânsito"
+        for elem in elementos:
+            elem_id = elem.get("id")
+            tags = elem.get("tags", {})
+            nome_via = tags.get("name", "Rodovia/Via na região de Piumhi")
+            tipo = tags.get("highway", tags.get("barrier", "Alerta na via"))
             
-            if inc_id and inc_id not in alertas_enviados:
+            if elem_id and elem_id not in alertas_enviados:
                 mensagem = (
-                    f"🚨 *ALERTA DE RODOVIA*\n\n"
-                    f"📍 *Região:* Piumhi / MG-050\n"
-                    f"⚠️ *Detalhes:* {descricao}"
+                    f"🚨 *ALERTA RODOVIÁRIO*\n\n"
+                    f"📍 *Local:* {nome_via}\n"
+                    f"⚠️ *Tipo:* {tipo}"
                 )
                 enviar_telegram(mensagem)
-                alertas_enviados.add(inc_id)
+                alertas_enviados.add(elem_id)
                 novos += 1
 
         if forcar_envio_status and novos == 0:
-            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado na região (Total ativo: {len(incidents)}).")
+            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO bloqueio ou obra detectado nas rodovias da região (Total de registros mapeados: {len(elementos)}).")
     else:
         if forcar_envio_status:
-            enviar_telegram(f"⚠️ *Erro:* {data}")
+            enviar_telegram(f"⚠️ *Aviso de conexão:* {elementos}")
 
 if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
