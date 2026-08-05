@@ -8,7 +8,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot de Monitoramento Rodoviário Amplo Online!"
+    return "Bot de Monitoramento Rodoviário Regional Online!"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
@@ -21,12 +21,11 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas expandidas (~500 km ao redor de Piumhi: Lat -20.46, Lon -45.95)
-# Cobertura aproximada: Lat -25.0 a -16.0 | Lon -50.5 a -41.4
-BOTTOM = -25.00
-LEFT = -50.50
-TOP = -16.00
-RIGHT = -41.40
+# Coordenadas ajustadas para ~100 km ao redor de Piumhi (Piumhi, Passos, Formiga, Capitólio, Bambuí)
+BOTTOM = -21.30
+LEFT = -46.80
+TOP = -19.60
+RIGHT = -45.10
 
 PIUMHI_LAT = -20.46
 PIUMHI_LON = -45.95
@@ -77,7 +76,7 @@ def processar_comandos():
                 text = message.get("text", "").strip()
                 
                 if text.startswith("/status"):
-                    enviar_telegram("🔎 *Verificando tráfego no raio de 500km...*")
+                    enviar_telegram("🔎 *Verificando tráfego no raio de Piumhi e região...*")
                     monitorar(forcar_envio_status=True)
                 elif text.startswith("/clima"):
                     enviar_telegram(obter_clima())
@@ -85,17 +84,19 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando todos os alertas e congestionamentos no Waze (Raio 500km)...")
+    print("Verificando todos os alertas e congestionamentos no Waze...")
     try:
-        response = requests.get(WAZE_URL, headers=HEADERS, timeout=20)
+        response = requests.get(WAZE_URL, headers=HEADERS, timeout=15)
         if response.status_code == 200:
             data = response.json()
             alerts = data.get("alerts", [])
             jams = data.get("jams", [])
             
+            print(f"Retornados da API: {len(alerts)} alertas e {len(jams)} engarrafamentos.")
+            
             alertas_novos = 0
             
-            # 1. TODOS OS ALERTAS (Sem nenhum filtro de tipo)
+            # 1. Alertas gerais (Sem filtros de tipo)
             for alert in alerts:
                 alert_id = alert.get("uuid")
                 alert_type = alert.get("type", "ALERTA")
@@ -106,7 +107,7 @@ def monitorar(forcar_envio_status=False):
 
                 if alert_id and alert_id not in alertas_enviados:
                     mensagem = (
-                        f"🚨 *NOVO ALERTA DETECTADO*\n\n"
+                        f"🚨 *ALERTA DE TRÂNSITO*\n\n"
                         f"📍 *Local:* {street} ({city if city else 'Região'})\n"
                         f"⚠️ *Tipo:* {subtype}\n"
                         f"📝 *Detalhes:* {report_description or 'Sem descrição extra'}"
@@ -115,7 +116,7 @@ def monitorar(forcar_envio_status=False):
                     alertas_enviados.add(alert_id)
                     alertas_novos += 1
 
-            # 2. TODOS OS CONGESTIONAMENTOS
+            # 2. Congestionamentos
             for jam in jams:
                 jam_id = jam.get("uuid")
                 street = jam.get("street", "Via não informada")
@@ -126,7 +127,7 @@ def monitorar(forcar_envio_status=False):
 
                 if jam_id and jam_id not in alertas_enviados:
                     mensagem = (
-                        f"🐢 *CONGESTIONAMENTO DETECTADO*\n\n"
+                        f"🐢 *LENTIDÃO / CONGESTIONAMENTO*\n\n"
                         f"📍 *Local:* {street} ({city if city else 'Região'})\n"
                         f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
                         f"📏 *Extensão:* {length_m} metros\n"
@@ -137,7 +138,7 @@ def monitorar(forcar_envio_status=False):
                     alertas_novos += 1
 
             if forcar_envio_status and alertas_novos == 0:
-                enviar_telegram("✅ *Tráfego Normal:* Nenhum novo alerta registrado na região no momento.")
+                enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
 
         else:
             print(f"Erro na API do Waze: {response.status_code}")
@@ -148,9 +149,8 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    enviar_telegram("🤖 *Bot Atualizado!* Monitoramento total ativado num raio de 500km sem restrições.")
+    enviar_telegram("🤖 *Bot Atualizado!* Área de cobertura ajustada para a região de Piumhi/MG.")
     
-    # Primeira varredura imediata
     monitorar()
     ultimo_monitoramento = time.time()
     
