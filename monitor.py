@@ -22,13 +22,12 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
-# Coordenadas da região de Piumhi / MG-050
-MIN_LON, MIN_LAT = -46.40, -20.90
-MAX_LON, MAX_LAT = -45.40, -20.00
+# Coordenadas ajustadas para ficar estritamente abaixo de 10.000 km² (~7.500 km²) na região de Piumhi / MG-050
+BBOX = "-46.30,-20.80,-45.50,-20.10"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-# Endpoint oficial TomTom Incident Details v5 (com extensao .json)
-TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails.json"
+# Endpoint oficial v5 limpo, sem .json e com o fields explicitamente definido para retornar IDs e eventos
+TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
 last_update_id = 0
@@ -50,20 +49,17 @@ def obter_dados_tomtom():
     if not TOMTOM_KEY:
         return False, "TOMTOM_KEY não configurada no Render"
     
-    # Formato exato retangular esperado pela API TomTom v5
-    bbox_str = f"{MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}"
-    
     params = {
         "key": TOMTOM_KEY.strip(),
-        "bbox": bbox_str,
-        "language": "pt-BR"
+        "bbox": BBOX,
+        "fields": "{incidents{id,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description,code}}}}"
     }
     
     try:
         r = requests.get(TOMTOM_URL, params=params, timeout=10)
         if r.status_code == 200:
             return True, r.json()
-        return False, f"HTTP {r.status_code}"
+        return False, f"HTTP {r.status_code} - {r.text}"
     except Exception as e:
         return False, str(e)
 
@@ -161,7 +157,7 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    enviar_telegram("🤖 *Bot Atualizado com TomTom!* Digite `/ping` para checar o status.")
+    enviar_telegram("🤖 *Bot Atualizado e Otimizado!* Digite `/ping` para checar o status.")
     
     monitorar()
     ultimo_monitoramento = time.time()
