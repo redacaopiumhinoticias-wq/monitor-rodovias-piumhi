@@ -35,7 +35,6 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 alertas_enviados = set()
 last_update_id = 0
 
-# Tipos de alertas ignorados (polícia e radares)
 TIPOS_IGNORADOS = ["POLICE", "POLICE_HIDE", "POLICE_VISIBLE", "SPEED_CAM", "ROAD_CLOSED_EVENT"]
 
 def enviar_telegram(mensagem):
@@ -67,7 +66,7 @@ def processar_comandos():
     global last_update_id
     if not TOKEN:
         return
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=1"
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=2"
     try:
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
@@ -76,14 +75,12 @@ def processar_comandos():
                 last_update_id = update.get("update_id", last_update_id)
                 message = update.get("message", {})
                 text = message.get("text", "").strip()
-                chat_id = message.get("chat_id")
-
-                if str(chat_id) == str(CHAT_ID):
-                    if text in ["/status", "/status@alertarodpiumhi_bot"]:
-                        enviar_telegram("🔎 *Status Atual:* O robô está online e monitorando as rodovias de Piumhi.")
-                        monitorar(forcar_envio_status=True)
-                    elif text in ["/clima", "/clima@alertarodpiumhi_bot"]:
-                        enviar_telegram(obter_clima())
+                
+                if text.startswith("/status"):
+                    enviar_telegram("🔎 *Verificando tráfego atual...*")
+                    monitorar(forcar_envio_status=True)
+                elif text.startswith("/clima"):
+                    enviar_telegram(obter_clima())
     except Exception as e:
         print(f"Erro ao checar comandos: {e}")
 
@@ -96,14 +93,12 @@ def monitorar(forcar_envio_status=False):
             alerts = data.get("alerts", [])
             jams = data.get("jams", [])
             
-            alertas_validos = 0
+            alertas_novos = 0
             
-            # 1. Alertas Gerais (Excluindo Polícia e Radares)
             for alert in alerts:
                 alert_type = alert.get("type", "")
                 subtype = alert.get("subtype", alert_type)
                 
-                # Ignorar polícia e radares
                 if alert_type in TIPOS_IGNORADOS or subtype in TIPOS_IGNORADOS:
                     continue
                 
@@ -121,9 +116,8 @@ def monitorar(forcar_envio_status=False):
                     )
                     enviar_telegram(mensagem)
                     alertas_enviados.add(alert_id)
-                    alertas_validos += 1
+                    alertas_novos += 1
 
-            # 2. Lentidões
             for jam in jams:
                 jam_id = jam.get("uuid")
                 street = jam.get("street", "Via não informada")
@@ -142,10 +136,10 @@ def monitorar(forcar_envio_status=False):
                     )
                     enviar_telegram(mensagem)
                     alertas_enviados.add(jam_id)
-                    alertas_validos += 1
+                    alertas_novos += 1
 
-            if forcar_envio_status and alertas_validos == 0:
-                enviar_telegram("✅ *Tráfego Normal:* Nenhum alerta importante ou retenção relevante detectada no momento.")
+            if forcar_envio_status and alertas_novos == 0:
+                enviar_telegram("✅ *Tráfego Normal:* Nenhum alerta importante ou retenção relevante detectada no momento nas rodovias da região.")
 
         else:
             print(f"Erro na API do Waze: {response.status_code}")
@@ -156,10 +150,18 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    print("Enviando mensagem de atualização no Telegram...")
-    enviar_telegram("🤖 *Bot Atualizado!* Filtro ativado (sem radares/polícia). Comandos disponíveis: `/status` e `/clima`.")
+    enviar_telegram("🤖 *Bot Atualizado!* Monitoramento e comandos prontos.")
+    
+    # Força a primeira checagem imediata ao iniciar
+    monitorar()
+    ultimo_monitoramento = time.time()
     
     while True:
         processar_comandos()
-        monitorar()
-        time.sleep(300)
+        
+        agora = time.time()
+        if agora - ultimo_monitoramento >= 300:
+            monitorar()
+            ultimo_monitoramento = agora
+            
+        time.sleep(3)
