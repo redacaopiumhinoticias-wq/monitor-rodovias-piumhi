@@ -16,17 +16,15 @@ def run():
 
 def keep_alive():
     t = Thread(target=run)
+    t.daemon = True
     t.start()
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TOMTOM_KEY = os.getenv("TOMTOM_KEY")
 
-# Área reduzida (~7.500 km²) para respeitar o limite de 10.000 km² da TomTom
 BBOX = "-46.30,-20.80,-45.50,-20.10"
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
-
-# Endpoint oficial da TomTom API v5
 TOMTOM_URL = "https://api.tomtom.com/traffic/services/5/incidentDetails"
 
 alertas_enviados = set()
@@ -59,7 +57,7 @@ def obter_dados_tomtom():
         r = requests.get(TOMTOM_URL, params=params, timeout=10)
         if r.status_code == 200:
             return True, r.json()
-        return False, f"HTTP {r.status_code} - {r.text}"
+        return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, str(e)
 
@@ -83,46 +81,52 @@ def obter_clima():
         pass
     return "Não foi possível obter dados do clima no momento."
 
-def processar_comandos():
+def loop_comandos_telegram():
     global last_update_id
-    if not TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=2"
-    try:
-        r = requests.get(url, timeout=5)
-        if r.status_code == 200:
-            updates = r.json().get("result", [])
-            for update in updates:
-                last_update_id = update.get("update_id", last_update_id)
-                message = update.get("message", {})
-                text = message.get("text", "").strip()
-                
-                if text.startswith("/ping") or text.startswith("/ajuda"):
-                    tomtom_ok, tomtom_info = checar_status_tomtom()
-                    status_str = f"🟢 *Monitor TomTom:* {tomtom_info}" if tomtom_ok else f"🔴 *TomTom:* {tomtom_info}"
-                    tempo_ativo_min = round((time.time() - inicio_bot) / 60)
+    print("Iniciando escuta de comandos do Telegram...")
+    while True:
+        if not TOKEN:
+            time.sleep(5)
+            continue
+        
+        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=5"
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                updates = r.json().get("result", [])
+                for update in updates:
+                    last_update_id = update.get("update_id", last_update_id)
+                    message = update.get("message", {})
+                    text = message.get("text", "").strip()
                     
-                    resposta = (
-                        f"🤖 *STATUS DO BOT*\n\n"
-                        f"✅ *Servidor Render:* Ativo / Online\n"
-                        f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
-                        f"{status_str}\n\n"
-                        f"📌 *Comandos disponíveis:*\n"
-                        f"• `/ping` - Checa se o bot está ativo\n"
-                        f"• `/status` - Varre o tráfego da região agora\n"
-                        f"• `/clima` - Consulta a temperatura atual"
-                    )
-                    enviar_telegram(resposta)
+                    if text.startswith("/ping") or text.startswith("/ajuda"):
+                        tomtom_ok, tomtom_info = checar_status_tomtom()
+                        status_str = f"🟢 *Monitor TomTom:* {tomtom_info}" if tomtom_ok else f"🔴 *TomTom:* {tomtom_info}"
+                        tempo_ativo_min = round((time.time() - inicio_bot) / 60)
+                        
+                        resposta = (
+                            f"🤖 *STATUS DO BOT*\n\n"
+                            f"✅ *Servidor Render:* Ativo / Online\n"
+                            f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
+                            f"{status_str}\n\n"
+                            f"📌 *Comandos disponíveis:*\n"
+                            f"• `/ping` - Checa se o bot está ativo\n"
+                            f"• `/status` - Varre o tráfego da região agora\n"
+                            f"• `/clima` - Consulta a temperatura atual"
+                        )
+                        enviar_telegram(resposta)
 
-                elif text.startswith("/status"):
-                    enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
-                    monitorar(forcar_envio_status=True)
+                    elif text.startswith("/status"):
+                        enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
+                        monitorar(forcar_envio_status=True)
 
-                elif text.startswith("/clima"):
-                    enviar_telegram(obter_clima())
+                    elif text.startswith("/clima"):
+                        enviar_telegram(obter_clima())
 
-    except Exception as e:
-        print(f"Erro ao checar comandos: {e}")
+        except Exception as e:
+            print(f"Erro no loop de comandos: {e}")
+        
+        time.sleep(1)
 
 def monitorar(forcar_envio_status=False):
     print("Verificando incidentes na TomTom...")
@@ -153,21 +157,23 @@ def monitorar(forcar_envio_status=False):
         if forcar_envio_status:
             enviar_telegram(f"⚠️ *Erro na conexão TomTom:* {data}")
 
+def loop_monitoramento():
+    print("Iniciando loop de monitoramento a cada 5 minutos...")
+    monitorar()
+    while True:
+        time.sleep(300)
+        monitorar()
+
 if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    enviar_telegram("🤖 *Bot Atualizado com TomTom!* Digite `/ping` para checar o status.")
+    # Inicia a escuta de comandos do Telegram em Thread separada
+    t_comandos = Thread(target=loop_comandos_telegram)
+    t_comandos.daemon = True
+    t_comandos.start()
     
-    monitorar()
-    ultimo_monitoramento = time.time()
+    enviar_telegram("🤖 *Bot Inicializado!* Digite `/ping` para checar o status.")
     
-    while True:
-        processar_comandos()
-        
-        agora = time.time()
-        if agora - ultimo_monitoramento >= 300:
-            monitorar()
-            ultimo_monitoramento = agora
-            
-        time.sleep(3)
+    # Roda o monitoramento na thread principal
+    loop_monitoramento()
