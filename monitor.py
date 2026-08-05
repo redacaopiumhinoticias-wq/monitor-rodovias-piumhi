@@ -21,17 +21,22 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas da região de Piumhi e arredores
+# Coordenadas da região de Piumhi
 BOTTOM = -22.75
 LEFT = -48.30
 TOP = -18.25
 RIGHT = -43.70
+PIUMHI_LAT = -20.46
+PIUMHI_LON = -45.95
 
-# URL ajustada para buscar 'alerts' (reportes) e 'jams' (lentidões em vermelho)
 WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row&types=alerts,jams"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 alertas_enviados = set()
+last_update_id = 0
+
+# Tipos de alertas ignorados (polícia e radares)
+TIPOS_IGNORADOS = ["POLICE", "POLICE_HIDE", "POLICE_VISIBLE", "SPEED_CAM", "ROAD_CLOSED_EVENT"]
 
 def enviar_telegram(mensagem):
     if not TOKEN or not CHAT_ID:
@@ -45,20 +50,65 @@ def enviar_telegram(mensagem):
     except Exception as e:
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
-def monitorar():
-    print("Verificando tráfego e lentidões no Waze...")
+def obter_clima():
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={PIUMHI_LAT}&longitude={PIUMHI_LON}&current_weather=true"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            weather = r.json().get("current_weather", {})
+            temp = weather.get("temperature", "N/A")
+            wind = weather.get("windspeed", "N/A")
+            return f"☀️ *Clima em Piumhi:* {temp}°C | Vento: {wind} km/h"
+    except Exception:
+        pass
+    return "Não foi possível obter dados do clima no momento."
+
+def processar_comandos():
+    global last_update_id
+    if not TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=1"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            updates = r.json().get("result", [])
+            for update in updates:
+                last_update_id = update.get("update_id", last_update_id)
+                message = update.get("message", {})
+                text = message.get("text", "").strip()
+                chat_id = message.get("chat_id")
+
+                if str(chat_id) == str(CHAT_ID):
+                    if text in ["/status", "/status@alertarodpiumhi_bot"]:
+                        enviar_telegram("🔎 *Status Atual:* O robô está online e monitorando as rodovias de Piumhi.")
+                        monitorar(forcar_envio_status=True)
+                    elif text in ["/clima", "/clima@alertarodpiumhi_bot"]:
+                        enviar_telegram(obter_clima())
+    except Exception as e:
+        print(f"Erro ao checar comandos: {e}")
+
+def monitorar(forcar_envio_status=False):
+    print("Verificando tráfego e alertas no Waze...")
     try:
         response = requests.get(WAZE_URL, headers=HEADERS, timeout=15)
         if response.status_code == 200:
             data = response.json()
-            
-            # 1. Processa Alertas Individuais (Acidentes, Perigos, etc.)
             alerts = data.get("alerts", [])
-            print(f"Alertas reportados na região: {len(alerts)}")
+            jams = data.get("jams", [])
+            
+            alertas_validos = 0
+            
+            # 1. Alertas Gerais (Excluindo Polícia e Radares)
             for alert in alerts:
+                alert_type = alert.get("type", "")
+                subtype = alert.get("subtype", alert_type)
+                
+                # Ignorar polícia e radares
+                if alert_type in TIPOS_IGNORADOS or subtype in TIPOS_IGNORADOS:
+                    continue
+                
                 alert_id = alert.get("uuid")
                 street = alert.get("street", "Via não informada")
-                subtype = alert.get("subtype", alert.get("type", "Alerta"))
                 report_description = alert.get("reportDescription", "")
                 city = alert.get("city", "")
 
@@ -71,22 +121,20 @@ def monitorar():
                     )
                     enviar_telegram(mensagem)
                     alertas_enviados.add(alert_id)
+                    alertas_validos += 1
 
-            # 2. Processa Lentidões/Engarrafamentos (Vias Vermelhas no Mapa)
-            jams = data.get("jams", [])
-            print(f"Trechos com lentidão na região: {len(jams)}")
+            # 2. Lentidões
             for jam in jams:
                 jam_id = jam.get("uuid")
                 street = jam.get("street", "Via não informada")
                 city = jam.get("city", "")
-                speed_kmh = jam.get("speed", 0) * 3.6  # Converte m/s para km/h
-                delay_min = round(jam.get("delay", 0) / 60)  # Converte segundos para minutos
-                length_m = jam.get("length", 0)  # Extensão do engarrafamento em metros
+                speed_kmh = jam.get("speed", 0) * 3.6
+                delay_min = round(jam.get("delay", 0) / 60)
+                length_m = jam.get("length", 0)
 
-                # Dispara alerta se houver atraso significativo (a partir de 2 minutos)
                 if jam_id and jam_id not in alertas_enviados and delay_min >= 2:
                     mensagem = (
-                        f"🐢 *LENTIDÃO DETECTADA (MAPA VERMELHO)*\n\n"
+                        f"🐢 *LENTIDÃO DETECTADA*\n\n"
                         f"📍 *Local:* {street} ({city if city else 'Região'})\n"
                         f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
                         f"📏 *Extensão:* {length_m} metros\n"
@@ -94,6 +142,10 @@ def monitorar():
                     )
                     enviar_telegram(mensagem)
                     alertas_enviados.add(jam_id)
+                    alertas_validos += 1
+
+            if forcar_envio_status and alertas_validos == 0:
+                enviar_telegram("✅ *Tráfego Normal:* Nenhum alerta importante ou retenção relevante detectada no momento.")
 
         else:
             print(f"Erro na API do Waze: {response.status_code}")
@@ -105,8 +157,9 @@ if __name__ == "__main__":
     keep_alive()
     
     print("Enviando mensagem de atualização no Telegram...")
-    enviar_telegram("🤖 *Bot Atualizado! Agora monitorando alertas e vias com lentidão (vermelhas).*")
+    enviar_telegram("🤖 *Bot Atualizado!* Filtro ativado (sem radares/polícia). Comandos disponíveis: `/status` e `/clima`.")
     
     while True:
+        processar_comandos()
         monitorar()
         time.sleep(300)
