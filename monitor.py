@@ -21,7 +21,7 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas regionais para Piumhi e região
+# Coordenadas regionais de Piumhi / MG-050
 BOTTOM = -20.90
 LEFT = -46.40
 TOP = -20.00
@@ -30,11 +30,15 @@ RIGHT = -45.40
 PIUMHI_LAT = -20.46
 PIUMHI_LON = -45.95
 
-# Endpoint funcional da API do Waze (sem o parâmetro &env=row que causava 404)
-WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}"
+# Endpoint alternativo formato feed livre
+WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&types=alerts,jams"
+
+# Cabeçalhos simulando um aparelho Android real
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.waze.com/live-map"
+    "User-Agent": "Waze/4.90.0.1 (Android; Android 13; Mobile)",
+    "Accept": "*/*",
+    "Accept-Language": "pt-BR",
+    "Connection": "keep-alive"
 }
 
 alertas_enviados = set()
@@ -53,19 +57,23 @@ def enviar_telegram(mensagem):
     except Exception as e:
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
-def checar_status_waze():
-    """Testa a conexão com o Waze."""
+def obter_dados_waze():
     try:
-        r = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            total_alerts = len(data.get("alerts", []))
-            total_jams = len(data.get("jams", []))
-            return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções ativas)"
-        else:
-            return False, f"Erro HTTP {r.status_code}"
+        # Requisição direta com User-Agent mobile
+        response = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        return False, f"HTTP {response.status_code}"
     except Exception as e:
-        return False, f"Falha na conexão: {e}"
+        return False, str(e)
+
+def checar_status_waze():
+    ok, resultado = obter_dados_waze()
+    if ok:
+        total_alerts = len(resultado.get("alerts", []))
+        total_jams = len(resultado.get("jams", []))
+        return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções)"
+    return False, f"Bloqueio de IP ({resultado})"
 
 def obter_clima():
     try:
@@ -96,7 +104,7 @@ def processar_comandos():
                 
                 if text.startswith("/ping") or text.startswith("/ajuda"):
                     waze_ok, waze_info = checar_status_waze()
-                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze Inacessível:* {waze_info}"
+                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze:* {waze_info}"
                     tempo_ativo_min = round((time.time() - inicio_bot) / 60)
                     
                     resposta = (
@@ -122,64 +130,57 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando alertas e congestionamentos no Waze...")
-    try:
-        response = requests.get(WAZE_URL, headers=HEADERS, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            alerts = data.get("alerts", [])
-            jams = data.get("jams", [])
-            
-            alertas_novos = 0
-            
-            # 1. Processa Alertas
-            for alert in alerts:
-                alert_id = alert.get("uuid")
-                alert_type = alert.get("type", "ALERTA")
-                subtype = alert.get("subtype", alert_type)
-                street = alert.get("street", "Via não informada")
-                report_description = alert.get("reportDescription", "")
-                city = alert.get("city", "")
+    print("Verificando alertas no Waze...")
+    ok, data = obter_dados_waze()
+    if ok:
+        alerts = data.get("alerts", [])
+        jams = data.get("jams", [])
+        alertas_novos = 0
+        
+        for alert in alerts:
+            alert_id = alert.get("uuid")
+            alert_type = alert.get("type", "ALERTA")
+            subtype = alert.get("subtype", alert_type)
+            street = alert.get("street", "Via não informada")
+            report_description = alert.get("reportDescription", "")
+            city = alert.get("city", "")
 
-                if alert_id and alert_id not in alertas_enviados:
-                    mensagem = (
-                        f"🚨 *ALERTA DE TRÂNSITO*\n\n"
-                        f"📍 *Local:* {street} ({city if city else 'Região'})\n"
-                        f"⚠️ *Tipo:* {subtype}\n"
-                        f"📝 *Detalhes:* {report_description or 'Sem descrição extra'}"
-                    )
-                    enviar_telegram(mensagem)
-                    alertas_enviados.add(alert_id)
-                    alertas_novos += 1
+            if alert_id and alert_id not in alertas_enviados:
+                mensagem = (
+                    f"🚨 *ALERTA DE TRÂNSITO*\n\n"
+                    f"📍 *Local:* {street} ({city if city else 'Região'})\n"
+                    f"⚠️ *Tipo:* {subtype}\n"
+                    f"📝 *Detalhes:* {report_description or 'Sem descrição extra'}"
+                )
+                enviar_telegram(mensagem)
+                alertas_enviados.add(alert_id)
+                alertas_novos += 1
 
-            # 2. Processa Retenções
-            for jam in jams:
-                jam_id = jam.get("uuid")
-                street = jam.get("street", "Via não informada")
-                city = jam.get("city", "")
-                speed_kmh = jam.get("speed", 0) * 3.6
-                delay_min = round(jam.get("delay", 0) / 60)
-                length_m = jam.get("length", 0)
+        for jam in jams:
+            jam_id = jam.get("uuid")
+            street = jam.get("street", "Via não informada")
+            city = jam.get("city", "")
+            speed_kmh = jam.get("speed", 0) * 3.6
+            delay_min = round(jam.get("delay", 0) / 60)
+            length_m = jam.get("length", 0)
 
-                if jam_id and jam_id not in alertas_enviados:
-                    mensagem = (
-                        f"🐢 *LENTIDÃO / CONGESTIONAMENTO*\n\n"
-                        f"📍 *Local:* {street} ({city if city else 'Região'})\n"
-                        f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
-                        f"📏 *Extensão:* {length_m} metros\n"
-                        f"🚗 *Velocidade média:* {speed_kmh:.1f} km/h"
-                    )
-                    enviar_telegram(mensagem)
-                    alertas_enviados.add(jam_id)
-                    alertas_novos += 1
+            if jam_id and jam_id not in alertas_enviados:
+                mensagem = (
+                    f"🐢 *LENTIDÃO / CONGESTIONAMENTO*\n\n"
+                    f"📍 *Local:* {street} ({city if city else 'Região'})\n"
+                    f"⏱️ *Atraso estimado:* ~{delay_min} min\n"
+                    f"📏 *Extensão:* {length_m} metros\n"
+                    f"🚗 *Velocidade média:* {speed_kmh:.1f} km/h"
+                )
+                enviar_telegram(mensagem)
+                alertas_enviados.add(jam_id)
+                alertas_novos += 1
 
-            if forcar_envio_status and alertas_novos == 0:
-                enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
-
-        else:
-            print(f"Erro na API do Waze: {response.status_code}")
-    except Exception as e:
-        print(f"Erro na requisição: {e}")
+        if forcar_envio_status and alertas_novos == 0:
+            enviar_telegram(f"✅ *Tráfego Normal:* Nenhum NOVO alerta registrado no momento nas rodovias da região (Total ativo no Waze: {len(alerts)} alertas).")
+    else:
+        if forcar_envio_status:
+            enviar_telegram("⚠️ *Servidor Waze Temporariamente Indisponível:* O Waze restringiu o acesso automático. O bot continuará tentando periodicamente.")
 
 if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
