@@ -1,30 +1,33 @@
 import os
-import time
+import threading
 import requests
-from datetime import datetime, timedelta
-from apscheduler.schedulers.blocking import BlockingScheduler
+from datetime import datetime
+from flask import flask
+from apscheduler.schedulers.background import BackgroundScheduler
 
-# Configurações do Telegram
+# Inicializa o Flask (necessário para manter o serviço ativo no Render.com)
+app = Flask(__name__)
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Coordenadas de Piumhi - MG e margens para cobrir 100km de raio
+# Coordenadas de Piumhi - MG (100km de raio)
 LAT_CENTER = -20.4544
 LON_CENTER = -45.7142
-DELTA = 0.95  # ~100 km de raio aproximado em graus
+DELTA = 0.95
 
 TOP = LAT_CENTER + DELTA
 BOTTOM = LAT_CENTER - DELTA
 RIGHT = LON_CENTER + DELTA
 LEFT = LON_CENTER - DELTA
 
-# Armazenar IDs de alertas já enviados para evitar duplicidade
 alertas_enviados = set()
 
-def enviar_telegram(mensagem):
+def enviar_telegram(mensagem, chat_id=None):
+    target_chat = chat_id or TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": target_chat,
         "text": mensagem,
         "parse_mode": "Markdown"
     }
@@ -36,22 +39,16 @@ def enviar_telegram(mensagem):
 
 def buscar_alertas_waze():
     print(f"[{datetime.now()}] Consultando Waze para a região de Piumhi...")
-    
     url = f"https://www.waze.com/row-rtserver/web/Traf/WazeTrafficServer/alerts?bottom={BOTTOM}&left={LEFT}&top={TOP}&right={RIGHT}&types=alerts"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code != 200:
-            print(f"Erro na API do Waze: {response.status_code}")
             return
         
         data = response.json()
         alerts = data.get("alerts", [])
-        
         agora = datetime.utcnow()
         
         for alert in alerts:
@@ -61,10 +58,9 @@ def buscar_alertas_waze():
                 
             pub_millis = alert.get("pubMillis", 0)
             pub_time = datetime.utcfromtimestamp(pub_millis / 1000.0)
-            
             diferenca_minutos = (agora - pub_time).total_seconds() / 60.0
             
-            # Regra dos 3 minutos de delay mínimo
+            # Respeita o delay mínimo de 3 minutos
             if diferenca_minutos < 3:
                 continue
                 
@@ -98,16 +94,47 @@ def buscar_alertas_waze():
                 alertas_enviados.clear()
                 
     except Exception as e:
-        print(f"Erro ao processar dados do Waze: {e}")
+        print(f"Erro ao processar Waze: {e}")
+
+# Rota simples para o Render saber que o app está ativo
+@app.route('/')
+def home():
+    return "Bot @alertarodpiumhi_bot está rodando com sucesso!"
+
+# Webhook simples para receber mensagens do Telegram e responder ao comando /status
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+def receber_telegram():
+    from flask import request
+    data = request.get_json()
+    if data and "message" in data:
+        message = data["message"]
+        chat_id = message["chat"]["id"]
+        texto = message.get("text", "")
+        
+        if texto.strip() == "/status":
+            enviar_telegram("✅ **Tudo OK!** O bot está ativo, monitorando as rodovias ao redor de Piumhi e conectado corretamente.", chat_id)
+            
+    return "OK", 200
+
+def configurar_webhook():
+    if TELEGRAM_TOKEN:
+        # Pega a URL pública gerada pelo Render automaticamente
+        render_url = os.environ.get("RENDER_EXTERNAL_URL")
+        if render_url:
+            webhook_url = f"{render_url}/{TELEGRAM_TOKEN}"
+            url_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
+            requests.get(url_api)
+            print(f"Webhook configurado para: {webhook_url}")
 
 if __name__ == "__main__":
-    print("Iniciando Bot de Monitoramento de Rodovias...")
-    scheduler = BlockingScheduler()
+    # Inicia o agendador de tarefas em background para checar o Waze a cada 2 minutos
+    scheduler = BackgroundScheduler()
     scheduler.add_job(buscar_alertas_waze, 'interval', minutes=2)
+    scheduler.start()
     
-    buscar_alertas_waze()
+    # Configura o webhook do Telegram após 5 segundos para garantir que o app subiu
+    threading.Timer(5.0, configurar_webhook).start()
     
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        print("Bot interrompido.")
+    # Roda o servidor Flask na porta exigida pelo Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
