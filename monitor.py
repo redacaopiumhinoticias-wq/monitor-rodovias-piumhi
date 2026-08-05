@@ -27,8 +27,8 @@ MIN_LAT, MIN_LON = -20.90, -46.40
 MAX_LAT, MAX_LON = -20.00, -45.40
 PIUMHI_LAT, PIUMHI_LON = -20.46, -45.95
 
-# Endpoint de incidentes de trânsito do TomTom
-TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails?key={TOMTOM_KEY}&bbox={MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}&fields={{incidents{{id,geometry{{type,coordinates}},properties{{iconCategory,magnitudeOfDelay,events{{description,code}},timeValidity}}}}}}"
+# Endpoint simplificado do TomTom
+TOMTOM_URL = f"https://api.tomtom.com/traffic/services/5/incidentDetails?key={TOMTOM_KEY}&bbox={MIN_LON},{MIN_LAT},{MAX_LON},{MAX_LAT}"
 
 alertas_enviados = set()
 last_update_id = 0
