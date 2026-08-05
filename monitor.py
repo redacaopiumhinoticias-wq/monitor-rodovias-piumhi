@@ -3,12 +3,13 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
+from datetime import datetime
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot de Monitoramento Rodoviário Regional Online!"
+    return "Bot de Monitoramento Rodoviário Online!"
 
 def run():
     port = int(os.environ.get("PORT", 10000))
@@ -21,7 +22,7 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas ajustadas para ~100 km ao redor de Piumhi (Piumhi, Passos, Formiga, Capitólio, Bambuí)
+# Coordenadas regionais (~100 km ao redor de Piumhi)
 BOTTOM = -21.30
 LEFT = -46.80
 TOP = -19.60
@@ -35,6 +36,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 alertas_enviados = set()
 last_update_id = 0
+inicio_bot = time.time()
 
 def enviar_telegram(mensagem):
     if not TOKEN or not CHAT_ID:
@@ -47,6 +49,20 @@ def enviar_telegram(mensagem):
         print(f"Envio Telegram Status: {r.status_code}")
     except Exception as e:
         print(f"Erro ao enviar mensagem no Telegram: {e}")
+
+def checar_status_waze():
+    """Testa se a API do Waze está respondendo corretamente."""
+    try:
+        r = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            total_alerts = len(data.get("alerts", []))
+            total_jams = len(data.get("jams", []))
+            return True, f"Conectado ({total_alerts} alertas / {total_jams} retenções ativas)"
+        else:
+            return False, f"Erro HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"Falha na conexão: {e}"
 
 def obter_clima():
     try:
@@ -75,11 +91,31 @@ def processar_comandos():
                 message = update.get("message", {})
                 text = message.get("text", "").strip()
                 
-                if text.startswith("/status"):
-                    enviar_telegram("🔎 *Verificando tráfego no raio de Piumhi e região...*")
+                if text.startswith("/ping") or text.startswith("/ajuda"):
+                    waze_ok, waze_info = checar_status_waze()
+                    status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze Inacessível:* {waze_info}"
+                    
+                    tempo_ativo_min = round((time.time() - inicio_bot) / 60)
+                    
+                    resposta = (
+                        f"🤖 *STATUS DO BOT*\n\n"
+                        f"✅ *Servidor Render:* Ativo / Online\n"
+                        f"⏱️ *Tempo no ar:* ~{tempo_ativo_min} min\n"
+                        f"{status_waze_str}\n\n"
+                        f"📌 *Comandos disponíveis:*\n"
+                        f"• `/ping` - Checa se o bot está ativo\n"
+                        f"• `/status` - Varre o tráfego da região agora\n"
+                        f"• `/clima` - Consulta a temperatura atual"
+                    )
+                    enviar_telegram(resposta)
+
+                elif text.startswith("/status"):
+                    enviar_telegram("🔎 *Verificando tráfego na região de Piumhi...*")
                     monitorar(forcar_envio_status=True)
+
                 elif text.startswith("/clima"):
                     enviar_telegram(obter_clima())
+
     except Exception as e:
         print(f"Erro ao checar comandos: {e}")
 
@@ -92,11 +128,9 @@ def monitorar(forcar_envio_status=False):
             alerts = data.get("alerts", [])
             jams = data.get("jams", [])
             
-            print(f"Retornados da API: {len(alerts)} alertas e {len(jams)} engarrafamentos.")
-            
             alertas_novos = 0
             
-            # 1. Alertas gerais (Sem filtros de tipo)
+            # 1. Alertas
             for alert in alerts:
                 alert_id = alert.get("uuid")
                 alert_type = alert.get("type", "ALERTA")
@@ -149,7 +183,7 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    enviar_telegram("🤖 *Bot Atualizado!* Área de cobertura ajustada para a região de Piumhi/MG.")
+    enviar_telegram("🤖 *Bot Atualizado!* Digite `/ping` a qualquer momento para verificar o status.")
     
     monitorar()
     ultimo_monitoramento = time.time()
