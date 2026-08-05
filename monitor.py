@@ -3,7 +3,6 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
-from datetime import datetime
 
 app = Flask('')
 
@@ -22,16 +21,17 @@ def keep_alive():
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# Coordenadas regionais (~100 km ao redor de Piumhi)
-BOTTOM = -21.30
-LEFT = -46.80
-TOP = -19.60
-RIGHT = -45.10
+# Coordenadas estáveis para Piumhi e região (evita o erro 404)
+BOTTOM = -20.90
+LEFT = -46.40
+TOP = -20.00
+RIGHT = -45.40
 
 PIUMHI_LAT = -20.46
 PIUMHI_LON = -45.95
 
-WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row&types=alerts,jams"
+# Link limpo da API do Waze
+WAZE_URL = f"https://www.waze.com/row-rtserver/web/TGeoRSS?top={TOP}&bottom={BOTTOM}&left={LEFT}&right={RIGHT}&env=row"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 alertas_enviados = set()
@@ -51,7 +51,7 @@ def enviar_telegram(mensagem):
         print(f"Erro ao enviar mensagem no Telegram: {e}")
 
 def checar_status_waze():
-    """Testa se a API do Waze está respondendo corretamente."""
+    """Testa a conexão com o Waze sem gerar erro 404."""
     try:
         r = requests.get(WAZE_URL, headers=HEADERS, timeout=10)
         if r.status_code == 200:
@@ -94,7 +94,6 @@ def processar_comandos():
                 if text.startswith("/ping") or text.startswith("/ajuda"):
                     waze_ok, waze_info = checar_status_waze()
                     status_waze_str = f"🟢 *Lendo Waze:* {waze_info}" if waze_ok else f"🔴 *Waze Inacessível:* {waze_info}"
-                    
                     tempo_ativo_min = round((time.time() - inicio_bot) / 60)
                     
                     resposta = (
@@ -120,7 +119,7 @@ def processar_comandos():
         print(f"Erro ao checar comandos: {e}")
 
 def monitorar(forcar_envio_status=False):
-    print("Verificando todos os alertas e congestionamentos no Waze...")
+    print("Verificando alertas e congestionamentos no Waze...")
     try:
         response = requests.get(WAZE_URL, headers=HEADERS, timeout=15)
         if response.status_code == 200:
@@ -130,7 +129,7 @@ def monitorar(forcar_envio_status=False):
             
             alertas_novos = 0
             
-            # 1. Alertas
+            # 1. Processa Alertas
             for alert in alerts:
                 alert_id = alert.get("uuid")
                 alert_type = alert.get("type", "ALERTA")
@@ -150,7 +149,7 @@ def monitorar(forcar_envio_status=False):
                     alertas_enviados.add(alert_id)
                     alertas_novos += 1
 
-            # 2. Congestionamentos
+            # 2. Processa Retenções
             for jam in jams:
                 jam_id = jam.get("uuid")
                 street = jam.get("street", "Via não informada")
@@ -183,7 +182,7 @@ if __name__ == "__main__":
     print("Iniciando servidor Flask de sustentação...")
     keep_alive()
     
-    enviar_telegram("🤖 *Bot Atualizado!* Digite `/ping` a qualquer momento para verificar o status.")
+    enviar_telegram("🤖 *Bot Atualizado!* Digite `/ping` para checar o status.")
     
     monitorar()
     ultimo_monitoramento = time.time()
